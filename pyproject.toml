@@ -22,3 +22,6 @@ reel2report = "reel2report.cli:main"
 
 [tool.setuptools]
 packages = ["reel2report"]
+
+[tool.setuptools.package-data]
+reel2report = ["templates/*.md"]

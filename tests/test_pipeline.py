@@ -89,4 +89,44 @@ def test_no_ai(tmp_path):
     video = make_video(tmp_path)
     out = tmp_path / "o"
     assert cli.main([str(video), "-o", str(out), "--no-ai", "--fps", "5"]) == 0
-    assert len(list((out / "frames").glob("*.jpg"))) == 4
+    assert len([p for p in (out / "frames").glob("*.jpg") if "transition" not in p.name]) == 4
+
+
+def test_transitions_attached_not_dropped(tmp_path):
+    video = make_video(tmp_path)
+    frames = sample_frames(video, tmp_path / "s", fps=5)
+    segs = segment_frames(frames, fps=5)
+    with_tr = [i for i, s in enumerate(segs) if s.transitions]
+    assert with_tr == [1, 2], [(s.start, s.transitions) for s in segs]
+
+
+def test_strip_files_and_prompt(tmp_path, monkeypatch):
+    import reel2report.llm as llm_mod
+    seen = []
+
+    class Spy(FakeLLM):
+        def chat_json(self, system, content):
+            seen.append((system, content))
+            return super().chat_json(system, content)
+
+    monkeypatch.setattr(llm_mod, "LLM", Spy)
+    video = make_video(tmp_path)
+    out = tmp_path / "out"
+    assert cli.main([str(video), "-o", str(out), "--fps", "5", "-t", "ux", "-i", "重点看支付"]) == 0
+    assert len(list((out / "frames").glob("*_transition.jpg"))) == 2
+    system, content = seen[0]
+    assert "交互设计师" in system and "重点看支付" in system and '"steps"' in system
+    assert any("过渡过程" in c.get("text", "") for c in content)
+    data = json.loads((out / "steps.json").read_text("utf-8"))
+    assert sum(1 for s in data["steps"] if s.get("strip")) == 2
+
+
+def test_templates(tmp_path):
+    from reel2report import templates
+    assert {"bug", "ux", "tutorial"} <= set(templates.builtin_names())
+    custom = tmp_path / "mine.md"
+    custom.write_text("只关注登录流程的安全提示。", "utf-8")
+    t = templates.load(str(custom))
+    assert t.step.startswith("只关注") and t.role and t.summary  # missing sections fall back to bug
+    with pytest.raises(ValueError):
+        templates.load("nope")

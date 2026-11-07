@@ -29,8 +29,8 @@ reel2report recording.mp4 --context examples/context.md
 
 | 文件 | 用途 |
 |---|---|
-| `report.md` | 给人看：问题汇总 + 每一步的时间戳、截图和描述 |
-| `agent.md` | 给编码 agent：问题与复现步骤 + 文字时间线，**只附带有问题的步骤截图**，节省 token |
+| `report.md` | 给人看：确认问题、待确认项，以及每一步的时间段、截图、过渡过程和描述 |
+| `agent.md` | 给编码 agent：确认问题与复现步骤 + 文字时间线，**只附带确认问题的截图**，节省 token |
 | `steps.json` | 结构化数据，可供其他工具或渲染器使用 |
 | `frames/` | 关键帧截图，文件名带时间戳 |
 | `.work/` | 中间结果；模型结果按批次缓存，中断后重跑会跳过已完成的批次 |
@@ -41,17 +41,43 @@ reel2report recording.mp4 --context examples/context.md
 reel2report recording.mp4 --no-ai
 ```
 
+### 提示词：场景模板 + 自定义要求
+
+```bash
+reel2report --list-templates
+```
+
+| 模板 | 用途 |
+|---|---|
+| `bug`（默认） | 内测找 bug：报错、卡顿、界面错乱、与预期不符 |
+| `ux` | 体验评审：操作路径、引导、等待反馈、视觉细节 |
+| `tutorial` | 教程记录：把操作整理成可照做的分步教程素材 |
+
+在模板基础上追加要求：
+
+```bash
+reel2report rec.mp4 -t bug -i "重点关注支付流程，忽略开屏广告"
+```
+
+```bash
+reel2report rec.mp4 --instructions-file my_focus.md
+```
+
+也可以写一份自己的模板文件，用 `-t path/to/my.md` 指定。格式参考 [reel2report/templates/bug.md](reel2report/templates/bug.md)，包含 `## role`、`## step`、`## summary` 三节，缺的节会沿用默认模板。输出的 JSON 格式固定在代码里，模板只改变关注点和语气，不会破坏解析。
+
 ### 常用参数
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `--context FILE` | – | 产品背景：页面、功能、预期行为。模型据此判断“哪里不对” |
-| `--fps` | 2 | 检测画面变化的采样率 |
+| `--fps` | 4 | 检测画面变化的采样率 |
 | `--threshold` | 8 | 判定为同一画面的哈希距离阈值；漏掉了小变化就调低，步骤太多就调高 |
-| `--min-stable` | 0.5 | 画面至少停留多少秒才算一个步骤（过滤动画和加载中的过渡帧） |
+| `--min-stable` | 0.5 | 画面停留多少秒以上算一个步骤；更短的变化算作过渡过程 |
+| `--transitions` | strip | `strip`：把过渡过程高帧率重采样，拼成一张胶片图交给模型；`drop`：丢弃 |
 | `--motion-interval` | 3 | 持续滚动时每隔多少秒保留一帧 |
 | `--batch` | 8 | 每次请求发送的截图数 |
-| `--model` / `--base-url` | `deepseek-v4-flash-vision-exp` / `https://api.deepseek.com` | 任何兼容 OpenAI 接口且支持图片输入的模型都可以用 |
+| `--model` / `--base-url` | `deepseek-flash` / `https://api.deepseek.com` | 任何兼容 OpenAI 接口且支持图片输入的模型都可以用 |
+| `--detail` | auto | 图片精度，`low` 会先缩到 512×512，更省但看不清小字 |
 
 也可以用环境变量 `REEL2REPORT_MODEL`、`REEL2REPORT_BASE_URL` 设置模型和接口地址。
 
@@ -63,10 +89,23 @@ reel2report recording.mp4 --no-ai
 ## 工作原理
 
 1. **采样**：ffmpeg 以低分辨率按固定帧率采样。
-2. **分段**：计算差分哈希（忽略顶部状态栏），连续相似的帧合并为一个“稳定画面”；停留太短的过渡帧丢弃，持续滚动时定期取样。
-3. **截图**：每个稳定画面取最后一帧（加载完成后的状态），以高清晰度保存。
-4. **理解**：截图按时间顺序分批发给多模态模型，同时附上上一批的流程概括和最后一帧，逐步描述操作、结果和异常。
-5. **汇总**：用纯文本请求合并问题、整理复现步骤，再渲染成文档。
+2. **分段**：计算差分哈希（忽略顶部状态栏），连续相似的帧合并为一个“稳定画面”，记录它出现和结束的时间；持续滚动时定期取样。
+3. **过渡过程**：两个稳定画面之间的短暂变化（加载、动画、闪屏）不单独成为步骤，而是用 8fps 重新采样，拼成一张带相对时间的胶片图，附在下一步前面。只多一张图的成本，模型就能看出白屏、闪烁、布局跳动，过渡耗时则在本地算出。
+4. **截图**：每个稳定画面取最后一帧（加载完成后的状态），以高清晰度保存。
+5. **理解**：截图按时间顺序分批发给多模态模型，同时附上上一批的流程概括和最后一帧，逐步描述操作、结果和异常。
+6. **汇总**：用纯文本请求合并问题，区分“确认问题”和“待确认”，整理复现步骤，再渲染成文档。
+
+## 端到端试跑
+
+[examples/mock_app.py](examples/mock_app.py) 会生成一段 30 秒的模拟记账 App 录屏，里面埋了几个 bug（保存后首页不刷新、导出报 500、保存加载过慢、白屏闪烁），可以用来检验效果或做回归测试：
+
+```bash
+python examples/mock_app.py mock.mp4
+```
+
+```bash
+reel2report mock.mp4 --context examples/context.md
+```
 
 ## 开发
 

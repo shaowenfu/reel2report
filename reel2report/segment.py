@@ -1,9 +1,11 @@
 """Group sampled frames into stable screens (local, no model calls).
 
-A "segment" is a run of consecutive frames that look the same. Short runs are
-transitions (animations, page loads) and are dropped; long runs of continuous
-change (scrolling, video playback) are sampled periodically so content is not
-lost.
+A "segment" is a run of consecutive frames that look the same. Short runs between
+two stable screens are a *transition* (animation, loading, flash): they are not
+turned into steps of their own, but their time span is attached to the next
+segment so the pipeline can show them to the model as a compact filmstrip and
+report how long they took. Long stretches of continuous change (scrolling,
+video playback) are sampled periodically so content is not lost.
 """
 
 from __future__ import annotations
@@ -42,6 +44,8 @@ class Segment:
     frames: list[Frame] = field(default_factory=list)
     hashes: list[int] = field(default_factory=list)
     kind: str = "stable"  # "stable" | "motion"
+    # (start, end) spans of transient change that happened before this screen settled
+    transitions: list[tuple[float, float]] = field(default_factory=list)
 
     @property
     def duration(self) -> float:
@@ -78,9 +82,11 @@ def segment_frames(
             cur = Segment(f.t, f.t + step, [f], [h])
     runs.append(cur)
 
-    # 2. Keep stable runs; turn long stretches of short runs into periodic motion samples.
+    # 2. Stable runs become steps. Short runs in between become a transition span
+    #    attached to the next step; very long ones are sampled as "motion" steps.
     kept: list[Segment] = []
     pending: list[Segment] = []
+    carry: list[tuple[float, float]] = []
 
     def flush_pending() -> None:
         if not pending:
@@ -93,17 +99,25 @@ def segment_frames(
                     r.kind = "motion"
                     kept.append(r)
                     next_t = r.start + motion_interval
+        else:
+            carry.append((span_start, span_end))
         pending.clear()
 
     for r in runs:
-        if r.duration >= min_stable - 1e-6:
+        # a single sample is never "stable": we cannot tell it apart from a passing frame
+        if len(r.frames) >= 2 and r.duration >= min_stable - 1e-6:
             flush_pending()
+            r.transitions = carry.copy()
+            carry.clear()
             kept.append(r)
         else:
             pending.append(r)
     flush_pending()
+    if carry and kept:  # transition at the very end of the recording
+        kept[-1].transitions += carry
 
-    # 3. Merge neighbours that ended up identical (A -> flicker -> A).
+    # 3. Merge neighbours that ended up identical (A -> flicker -> A). The flicker
+    #    is kept as a transition of the merged step: flashes are UI bugs too.
     merged: list[Segment] = []
     for s in kept:
         if merged and hamming(merged[-1].hashes[-1], s.hashes[0]) <= threshold:
@@ -111,6 +125,7 @@ def segment_frames(
             m.end = s.end
             m.frames += s.frames
             m.hashes += s.hashes
+            m.transitions += s.transitions
             if s.kind == "stable":
                 m.kind = "stable"
         else:

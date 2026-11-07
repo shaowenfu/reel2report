@@ -14,12 +14,18 @@ import time
 from pathlib import Path
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-v4-flash-vision-exp"
+DEFAULT_MODEL = "deepseek-flash"
 
 
-def image_part(path: Path) -> dict:
+IMAGE_DETAIL = os.environ.get("REEL2REPORT_DETAIL", "auto")
+
+
+def image_part(path: Path, detail: str | None = None) -> dict:
     data = base64.b64encode(path.read_bytes()).decode()
-    return {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{data}"}}
+    url = {"url": f"data:image/jpeg;base64,{data}"}
+    if (detail or IMAGE_DETAIL) != "auto":
+        url["detail"] = detail or IMAGE_DETAIL
+    return {"type": "image_url", "image_url": url}
 
 
 def text_part(text: str) -> dict:

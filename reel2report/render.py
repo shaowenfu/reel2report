@@ -45,6 +45,14 @@ def render_human(steps: list[dict], summary: dict, meta: dict, out: Path) -> Pat
             L.append(f"- 备注：{it['notes']}")
         L.append("")
 
+    tv = summary.get("to_verify") or []
+    if tv:
+        L += ["## 待确认", ""]
+        for it in tv:
+            refs = "、".join(f"[#{i}](#step-{i})" for i in it.get("step_ids", []) if i in by_id)
+            L.append(f"- **{it.get('title', '')}**（{refs or '-'}）：{it.get('reason', '')}")
+        L.append("")
+
     L += ["## 详细步骤", ""]
     for s in steps:
         flag = " ⚠️" if s.get("anomaly") else ""
@@ -52,10 +60,15 @@ def render_human(steps: list[dict], summary: dict, meta: dict, out: Path) -> Pat
         L += [f'<a id="step-{s["id"]}"></a>', f"### #{s['id']} · {s['time']} · {s.get('screen', '')}{flag}", "",
               f"- **操作**：{s.get('action', '')}{unc}",
               f"- **结果**：{s.get('observation', '')}"]
+        if s.get("transition_s"):
+            L.append(f"- **过渡**（{s['transition_s']:.1f}s）：{s.get('transition') or '-'}")
         if s.get("anomaly"):
             an = s["anomaly"]
             L.append(f"- **异常**（{SEV_LABEL.get(an.get('severity'), an.get('severity', ''))}）：{an.get('description', '')}")
         L += ["", f'<img src="{_rel(s["image"], out)}" width="280">', ""]
+        if s.get("strip"):
+            L += [f"<details><summary>过渡过程胶片</summary>", "",
+                  f'<img src="{_rel(s["strip"], out)}">', "", "</details>", ""]
     path = out / "report.md"
     path.write_text("\n".join(L), "utf-8")
     return path
@@ -64,8 +77,8 @@ def render_human(steps: list[dict], summary: dict, meta: dict, out: Path) -> Pat
 def render_agent(steps: list[dict], summary: dict, meta: dict, out: Path) -> Path:
     """Compact report for coding agents: text timeline, screenshots only where issues are."""
     issues = _issues(summary)
+    # screenshots only for steps the summary actually cites; other anomalies are marked in text
     issue_ids = {i for it in issues for i in it.get("step_ids", [])}
-    issue_ids |= {s["id"] for s in steps if s.get("anomaly")}
     L = [f"# Bug report: {summary.get('title') or meta['video']}", "",
          f"Source: {meta['video']} ({meta['duration']}). Screenshots are attached only for steps involved in issues.", ""]
     if summary.get("overview"):
@@ -83,13 +96,25 @@ def render_agent(steps: list[dict], summary: dict, meta: dict, out: Path) -> Pat
         if it.get("notes"):
             L.append(f"- Notes: {it['notes']}")
         L.append("")
+    tv = summary.get("to_verify") or []
+    if tv:
+        L += ["## To verify (low confidence, no screenshots)", ""]
+        for it in tv:
+            L.append(f"- {it.get('title', '')} (steps {', '.join('#' + str(i) for i in it.get('step_ids', []))}): "
+                     f"{it.get('reason', '')}")
+        L.append("")
     L += ["## Timeline", ""]
     for s in steps:
         mark = " ⚠" if s["id"] in issue_ids else ""
         unc = " (uncertain)" if s.get("uncertain") else ""
-        L.append(f"- #{s['id']} {s['time']} [{s.get('screen', '')}] {s.get('action', '')} → "
+        tr = ""
+        if s.get("transition_s"):
+            tr = f" (transition {s['transition_s']:.1f}s" + (f": {s['transition']}" if s.get("transition") else "") + ")"
+        L.append(f"- #{s['id']} {s['time']} [{s.get('screen', '')}] {s.get('action', '')}{tr} → "
                  f"{s.get('observation', '')}{unc}{mark}")
         if s["id"] in issue_ids:
+            if s.get("strip"):
+                L.append(f"  ![#{s['id']} transition]({_rel(s['strip'], out)})")
             L.append(f"  ![#{s['id']}]({_rel(s['image'], out)})")
     path = out / "agent.md"
     path.write_text("\n".join(L) + "\n", "utf-8")
@@ -98,7 +123,8 @@ def render_agent(steps: list[dict], summary: dict, meta: dict, out: Path) -> Pat
 
 def write_json(steps: list[dict], summary: dict, meta: dict, out: Path) -> Path:
     data = {"meta": meta, "summary": summary,
-            "steps": [{**s, "image": _rel(s["image"], out)} for s in steps]}
+            "steps": [{**s, "image": _rel(s["image"], out),
+                       **({"strip": _rel(s["strip"], out)} if s.get("strip") else {})} for s in steps]}
     path = out / "steps.json"
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
     return path

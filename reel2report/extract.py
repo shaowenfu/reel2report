@@ -54,3 +54,50 @@ def grab_frame(video: Path, t: float, dest: Path, max_width: int) -> Path:
         check=True,
     )
     return dest
+
+
+def grab_strip(video: Path, spans: list[tuple[float, float]], dest: Path, fps: float = 8.0,
+               max_frames: int = 10, thumb_width: int = 200) -> tuple[Path, int] | None:
+    """Re-sample transition spans at a higher rate and tile them into one filmstrip image.
+
+    One strip costs the model a single image, however many frames it shows.
+    Returns (path, frame_count) or None when nothing could be extracted.
+    """
+    import tempfile
+
+    from PIL import Image, ImageDraw
+
+    shots: list[tuple[float, Path]] = []
+    tmp = Path(tempfile.mkdtemp(prefix="r2r_strip_"))
+    try:
+        for si, (start, end) in enumerate(spans):
+            pattern = tmp / f"{si:02d}_%04d.jpg"
+            subprocess.run(
+                [_require("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+                 "-ss", f"{start:.3f}", "-t", f"{max(end - start, 1 / fps):.3f}", "-i", str(video),
+                 "-vf", f"fps={fps},scale={thumb_width}:-2", "-q:v", "4", str(pattern)],
+                check=True,
+            )
+            for k, p in enumerate(sorted(tmp.glob(f"{si:02d}_*.jpg"))):
+                shots.append((start + k / fps, p))
+        if not shots:
+            return None
+        if len(shots) > max_frames:
+            idx = [round(i * (len(shots) - 1) / (max_frames - 1)) for i in range(max_frames)]
+            shots = [shots[i] for i in idx]
+        thumbs = [(t, Image.open(p).convert("RGB")) for t, p in shots]
+        w, h = thumbs[0][1].size
+        label_h, gap = 18, 4
+        sheet = Image.new("RGB", (len(thumbs) * (w + gap) - gap, h + label_h), (30, 30, 30))
+        draw = ImageDraw.Draw(sheet)
+        t0 = thumbs[0][0]
+        for i, (t, im) in enumerate(thumbs):
+            x = i * (w + gap)
+            sheet.paste(im.resize((w, h)), (x, label_h))
+            draw.text((x + 4, 3), f"+{t - t0:.2f}s", fill=(255, 220, 0))
+            im.close()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        sheet.save(dest, quality=85)
+        return dest, len(thumbs)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
