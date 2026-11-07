@@ -1,0 +1,56 @@
+"""Frame extraction with ffmpeg (runs locally, no model calls)."""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass
+class Frame:
+    path: Path
+    t: float  # seconds from start of video
+
+
+def _require(tool: str) -> str:
+    exe = shutil.which(tool)
+    if not exe:
+        raise RuntimeError(f"找不到 {tool}，请先安装 ffmpeg（含 ffprobe）。")
+    return exe
+
+
+def probe_duration(video: Path) -> float:
+    out = subprocess.run(
+        [_require("ffprobe"), "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(video)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    return float(out)
+
+
+def sample_frames(video: Path, out_dir: Path, fps: float, width: int = 256) -> list[Frame]:
+    """Low-res frames at a fixed rate, used only for change detection."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old in out_dir.glob("s_*.jpg"):
+        old.unlink()
+    subprocess.run(
+        [_require("ffmpeg"), "-hide_banner", "-loglevel", "error", "-i", str(video),
+         "-vf", f"fps={fps},scale={width}:-2", "-q:v", "5", str(out_dir / "s_%06d.jpg")],
+        check=True,
+    )
+    files = sorted(out_dir.glob("s_*.jpg"))
+    return [Frame(p, i / fps) for i, p in enumerate(files)]
+
+
+def grab_frame(video: Path, t: float, dest: Path, max_width: int) -> Path:
+    """Full-quality single frame at time t (only for frames we keep)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [_require("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+         "-ss", f"{t:.3f}", "-i", str(video), "-frames:v", "1",
+         "-vf", f"scale='min({max_width},iw)':-2", "-q:v", "3", str(dest)],
+        check=True,
+    )
+    return dest
