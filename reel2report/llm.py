@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -62,6 +63,7 @@ class LLM:
         self.temperature = temperature
         self._json_mode = True
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0}
+        self._lock = threading.Lock()
 
     def chat_json(self, system: str, content: list[dict], retries: int = 3) -> dict:
         messages = [{"role": "system", "content": system},
@@ -82,8 +84,9 @@ class LLM:
                 time.sleep(2 ** attempt)
                 continue
             if resp.usage:
-                self.usage["prompt_tokens"] += resp.usage.prompt_tokens or 0
-                self.usage["completion_tokens"] += resp.usage.completion_tokens or 0
+                with self._lock:  # batches may run in threads
+                    self.usage["prompt_tokens"] += resp.usage.prompt_tokens or 0
+                    self.usage["completion_tokens"] += resp.usage.completion_tokens or 0
             try:
                 return parse_json(resp.choices[0].message.content or "")
             except (json.JSONDecodeError, ValueError) as e:

@@ -18,6 +18,7 @@ STEP_RULES = """你会按时间顺序看到一段软件使用录屏中的关键�
 - 每张截图都标注了画面“出现–结束”的时间段，截图取自该画面最后稳定的时刻。计算耗时、等待时长时以时间段为准，不要用截图时刻推算。
 - anomaly 只用于有画面证据的问题。“不确定”用 uncertain 表达，不要因为不确定就标 anomaly；正常的翻页、滑入、淡入淡出等转场动画不是异常。
 - 画面上的灰色或半透明圆点通常是系统“显示点按操作”的触摸指示，表示用户手指的位置，可用来判断点了哪里；它不是界面元素，被它遮住的内容不算异常。
+- 有的截图附有测试者当时的口述（语音转写，可能有错别字）。口述是判断用户意图和不满的重要依据：测试者抱怨、疑惑或说“不对”的地方，要结合画面认真核实并写进 observation；口述与画面矛盾时以画面为准，并标 uncertain。
 - 第一张截图之前没有画面时，action 写“（录屏开始）”。
 - 用简体中文，描述简洁具体，写出界面上关键的按钮或文字。"""
 
@@ -28,6 +29,7 @@ STEP_FORMAT = """只输出 JSON，格式：
  "context": "到目前为止的流程概括（一两句话，供下一批参考）"}"""
 
 SUMMARY_RULES = """只基于逐步记录中的内容，不要编造。用简体中文。
+- 测试者口述中明确提到的问题，即使画面证据不足，也至少要放进 to_verify，并在 reason 里引用原话。
 - issues 只放有明确画面证据的问题（confidence 为 "high"）。
 - 依赖推测、标了“不确定”、或可能是录屏/误操作造成的，放进 to_verify，留给人工确认。
 - 宁缺毋滥：同一个根因只列一条。"""
@@ -67,50 +69,83 @@ def span(f: dict) -> str:
     return fmt_time(f["t"])
 
 
+def _batch_content(batch: list[dict], prev_frame: dict | None, running_context: str,
+                   product_context: str) -> list[dict]:
+    content: list[dict] = []
+    if product_context:
+        content.append(text_part(f"【产品背景与预期行为】\n{product_context}"))
+    if running_context:
+        content.append(text_part(f"【之前的流程概括】\n{running_context}"))
+    if prev_frame:
+        content.append(text_part(
+            f"【参考】上一批最后一张截图（编号 {prev_frame['id']}，{span(prev_frame)}），不需要再描述："))
+        content.append(image_part(Path(prev_frame["image"])))
+    content.append(text_part("【本批截图】请逐张描述："))
+    for f in batch:
+        if f.get("strip"):
+            content.append(text_part(
+                f"截图编号 {f['id']} 之前的过渡过程（耗时约 {f['transition_s']:.1f}s，"
+                f"{f['strip_frames']} 帧，从左到右）："))
+            content.append(image_part(Path(f["strip"])))
+        head = f"截图编号 {f['id']}，画面 {span(f)}："
+        if f.get("narration"):
+            head = f"截图编号 {f['id']}，画面 {span(f)}，测试者此时口述：「{f['narration']}」："
+        content.append(text_part(head))
+        content.append(image_part(Path(f["image"])))
+    return content
+
+
 def describe_steps(llm: LLM, frames: list[dict], work: Path, tpl: Template, extra: str = "",
-                   batch_size: int = 8, product_context: str = "", log=print) -> list[dict]:
-    """frames: [{"id", "t", "image", "strip"?, "transition_s"?}]. Results are cached per batch."""
+                   batch_size: int = 8, product_context: str = "", workers: int = 1,
+                   log=print) -> list[dict]:
+    """frames: [{"id", "t", "image", "strip"?, "transition_s"?, "narration"?}].
+
+    workers=1 runs batches in order and passes a running summary forward (best
+    continuity). workers>1 runs batches concurrently; each batch still sees the
+    previous batch's last screenshot, but not the text summary.
+    Results are cached per batch, keyed by everything that shapes the prompt.
+    """
     system = step_system(tpl, extra)
-    # cache is keyed by prompt + model, so changing the template invalidates it
-    key = hashlib.sha1(f"{llm.model}\n{system}\n{product_context}\n{batch_size}".encode()).hexdigest()[:10]
+    mode = "seq" if workers <= 1 else "par"
+    key = hashlib.sha1(f"{llm.model}\n{system}\n{product_context}\n{batch_size}\n{mode}".encode()).hexdigest()[:10]
     cache = work / "batches" / key
     cache.mkdir(parents=True, exist_ok=True)
-    steps: list[dict] = []
-    running_context = ""
-    prev_frame: dict | None = None
     batches = [frames[i : i + batch_size] for i in range(0, len(frames), batch_size)]
+    results: list[dict | None] = [None] * len(batches)
 
-    for bi, batch in enumerate(batches):
+    def run(bi: int, running_context: str = "") -> dict:
         cache_file = cache / f"batch_{bi:04d}.json"
+        # the cache also remembers frame content, so re-segmented videos are not mixed up
+        sig = [(f["id"], f["t"], f.get("narration", "")) for f in batches[bi]]
         if cache_file.exists():
-            result = json.loads(cache_file.read_text("utf-8"))
-            log(f"  批次 {bi + 1}/{len(batches)}：使用缓存")
-        else:
-            n_strip = sum(1 for f in batch if f.get("strip"))
-            log(f"  批次 {bi + 1}/{len(batches)}：{len(batch)} 张截图 + {n_strip} 张过渡胶片")
-            content: list[dict] = []
-            if product_context:
-                content.append(text_part(f"【产品背景与预期行为】\n{product_context}"))
-            if running_context:
-                content.append(text_part(f"【之前的流程概括】\n{running_context}"))
-            if prev_frame:
-                content.append(text_part(
-                    f"【参考】上一批最后一张截图（编号 {prev_frame['id']}，{fmt_time(prev_frame['t'])}），不需要再描述："))
-                content.append(image_part(Path(prev_frame["image"])))
-            content.append(text_part("【本批截图】请逐张描述："))
-            for f in batch:
-                if f.get("strip"):
-                    content.append(text_part(
-                        f"截图编号 {f['id']} 之前的过渡过程（耗时约 {f['transition_s']:.1f}s，"
-                        f"{f['strip_frames']} 帧，从左到右）："))
-                    content.append(image_part(Path(f["strip"])))
-                content.append(text_part(f"截图编号 {f['id']}，画面 {span(f)}："))
-                content.append(image_part(Path(f["image"])))
-            result = llm.chat_json(system, content)
-            cache_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), "utf-8")
+            cached = json.loads(cache_file.read_text("utf-8"))
+            if cached.get("_sig") == json.loads(json.dumps(sig)):
+                log(f"  批次 {bi + 1}/{len(batches)}：使用缓存")
+                return cached
+        n_strip = sum(1 for f in batches[bi] if f.get("strip"))
+        log(f"  批次 {bi + 1}/{len(batches)}：{len(batches[bi])} 张截图 + {n_strip} 张过渡胶片")
+        prev = batches[bi - 1][-1] if bi > 0 else None
+        result = llm.chat_json(system, _batch_content(batches[bi], prev, running_context, product_context))
+        result["_sig"] = sig
+        cache_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), "utf-8")
+        return result
 
+    if workers <= 1:
+        ctx = ""
+        for bi in range(len(batches)):
+            results[bi] = run(bi, ctx)
+            ctx = results[bi].get("context", ctx)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for bi, r in zip(range(len(batches)), pool.map(run, range(len(batches)))):
+                results[bi] = r
+
+    steps: list[dict] = []
+    for batch, result in zip(batches, results):
         by_id = {}
-        for s in result.get("steps", []):
+        for s in (result or {}).get("steps", []):
             try:
                 by_id[int(s.get("id"))] = s
             except (TypeError, ValueError):
@@ -120,8 +155,6 @@ def describe_steps(llm: LLM, frames: list[dict], work: Path, tpl: Template, extr
                                     "anomaly": None, "uncertain": True})
             steps.append({**s, **{k: v for k, v in f.items() if k != "id"},
                           "id": f["id"], "time": span(f)})
-        running_context = result.get("context", running_context)
-        prev_frame = batch[-1]
     return steps
 
 
@@ -135,8 +168,9 @@ def summarize(llm: LLM, steps: list[dict], tpl: Template, extra: str = "",
         tr = ""
         if s.get("transition_s"):
             tr = f"｜过渡 {s['transition_s']:.1f}s：{s.get('transition') or ''}"
+        said = f"｜测试者口述：「{s['narration']}」" if s.get("narration") else ""
         lines.append(f"#{s['id']} [{s['time']}] 界面：{s.get('screen', '')}｜操作：{s.get('action', '')}"
-                     f"{tr}｜结果：{s.get('observation', '')}{unc}{an_txt}")
+                     f"{tr}｜结果：{s.get('observation', '')}{unc}{an_txt}{said}")
     content = []
     if product_context:
         content.append(text_part(f"【产品背景与预期行为】\n{product_context}"))

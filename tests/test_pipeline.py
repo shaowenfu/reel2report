@@ -130,3 +130,37 @@ def test_templates(tmp_path):
     assert t.step.startswith("只关注") and t.role and t.summary  # missing sections fall back to bug
     with pytest.raises(ValueError):
         templates.load("nope")
+
+
+def test_resume_skips_extraction_and_parallel_order(tmp_path, monkeypatch):
+    import reel2report.llm as llm_mod
+    monkeypatch.setattr(llm_mod, "LLM", FakeLLM)
+    video = make_video(tmp_path)
+    out = tmp_path / "out"
+    assert cli.main([str(video), "-o", str(out), "--fps", "5", "--batch", "1", "--workers", "3"]) == 0
+    first = json.loads((out / "steps.json").read_text("utf-8"))
+    assert [s["id"] for s in first["steps"]] == [1, 2, 3, 4]
+    assert (out / "report.html").stat().st_size > 10_000  # images embedded
+
+    calls = []
+    monkeypatch.setattr(cli, "sample_frames", lambda *a, **k: calls.append(1) or [])
+    assert cli.main([str(video), "-o", str(out), "--fps", "5", "--batch", "1", "--workers", "3"]) == 0
+    assert calls == []  # keyframes reused
+    assert cli.main([str(video), "-o", str(out), "--fps", "4", "--batch", "1"]) == 0
+    assert calls == [1]  # changed settings -> re-extract
+
+
+def test_align_narration():
+    from reel2report.transcribe import align
+    kfs = [{"id": 1, "stable_to": 3.0}, {"id": 2, "stable_to": 6.0}, {"id": 3, "stable_to": 9.0}]
+    align([{"start": 0.5, "end": 1.5, "text": "登录"}, {"start": 3.2, "end": 4.0, "text": "怎么这么慢"},
+           {"start": 4.1, "end": 5.0, "text": "还在转"}, {"start": 9.5, "end": 10.0, "text": "结束"}], kfs)
+    assert kfs[0]["narration"] == "登录"
+    assert kfs[1]["narration"] == "怎么这么慢 还在转"
+    assert kfs[2]["narration"] == "结束"
+
+
+def test_split_phrases():
+    from reel2report.transcribe import split_phrases
+    words = [(0.5, 0.8, "我先"), (0.8, 1.2, "登录,"), (8.8, 9.0, "点"), (9.0, 9.3, "加号"), (13.2, 13.5, "保存。")]
+    assert [p["text"] for p in split_phrases(words)] == ["我先登录", "点加号", "保存。"]
