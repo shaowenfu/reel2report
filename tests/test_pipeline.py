@@ -171,7 +171,7 @@ def test_truncated_batch_is_split(tmp_path, monkeypatch):
 
     class Truncating(FakeLLM):
         def chat_json(self, system, content, **kw):
-            n = sum(1 for c in content if c["type"] == "text" and c["text"].startswith("截图编号 "))
+            n = sum(1 for c in content if c["type"] == "text" and c["text"].startswith("截图编号 ") and "，画面" in c["text"])
             if n > 1:
                 raise llm_mod.OutputTruncated("too long")
             return super().chat_json(system, content, **kw)
