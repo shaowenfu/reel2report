@@ -76,11 +76,11 @@ def grab_matching(video: Path, t: float, reference: Path, dest: Path, max_width:
         subprocess.run(
             [_require("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
              "-ss", f"{start:.3f}", "-t", f"{2 * window:.3f}", "-i", str(video),
-             "-vf", f"scale='min({max_width},iw)':-2", "-fps_mode", "passthrough",
+             "-vf", f"scale='min({max_width},iw)':-2", "-fps_mode", "vfr",
              "-q:v", "3", str(tmp / "c_%04d.jpg")],
-            check=True,
+            capture_output=True,
         )
-        cands = sorted(tmp.glob("c_*.jpg"))
+        cands = sorted(tmp.glob("c_*.jpg"))  # partial output is still usable
         if not cands:
             return grab_frame(video, t, dest, max_width)
         ref = dhash(reference)
