@@ -76,7 +76,7 @@ reel2report rec.mp4 --instructions-file my_focus.md
 
 报告按“先结论、后细节”的顺序组织：
 
-1. **问题**：有画面证据或测试者明确认定的问题，附复现步骤
+1. **问题**：有画面证据或测试者明确认定的问题，附复现步骤，分为缺陷（bug）、体验（ux）、未完成（incomplete）三类
 2. **待确认**：猜测、证据不足的点，引用原话
 3. **已排除的怀疑**：测试者曾怀疑、后来自己推翻的，开发者不用再查
 4. **建议与需求**：口述中的功能建议（不是 bug）
@@ -112,6 +112,9 @@ reel2report rec.mp4 --instructions-file my_focus.md
 | `--model` / `--base-url` | `deepseek-flash` / `https://api.deepseek.com` | 任何兼容 OpenAI 接口且支持图片输入的模型都可以用 |
 | `--workers` | 4 | 并发请求数。设为 1 则按顺序分析，并把前文概括传给下一批，连贯性最好但最慢 |
 | `--audio` | auto | 语音转写：`auto` / `on` / `off` |
+| `--asr-model` | small | Whisper 模型；中文长录屏建议用 `medium`，更准但更慢 |
+| `--asr-hints` | – | 产品名和界面专有词（逗号分隔），帮助语音识别拼对 |
+| `--step-thinking` / `--summary-thinking` | off / on | 推理模型是否先思考。逐步看图时关掉，更快、更省，也不会输出失控；汇总时打开，裁决口述反复、归并任务更准 |
 | `--detail` | auto | 图片精度，`low` 会先缩到 512×512，更省但看不清小字 |
 
 也可以用环境变量 `REEL2REPORT_MODEL`、`REEL2REPORT_BASE_URL` 设置模型和接口地址。
@@ -139,7 +142,9 @@ reel2report rec.mp4 --instructions-file my_focus.md
 python examples/mock_app.py mock.mp4
 ```
 
-实测数据：30 秒的模拟录屏消耗约 1 万输入 token；10 分钟的录屏本地处理约 40 秒，得到约 200 个关键步骤。
+实测数据：
+- 30 秒的模拟录屏：约 1 万输入 token。
+- 一段真实的 20 分钟安卓录屏（带口述）：251 个关键步骤；约 33 万输入、4.5 万输出 token；本地抽帧约 3 分钟，模型分析约 8 分钟；`medium` 语音转写在 4 核 CPU 上约 15 分钟（之后会缓存）。
 
 ```bash
 reel2report mock.mp4 --context examples/context.md
