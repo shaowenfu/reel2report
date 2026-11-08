@@ -33,6 +33,10 @@ def dhash(path, size: int = 16, crop_top: float = 0.06) -> int:
     return bits
 
 
+# Settled screens closer than this are the same screen (touch dots, cursor blink).
+SETTLED_SAME = 2
+
+
 def hamming(a: int, b: int) -> int:
     return (a ^ b).bit_count()
 
@@ -120,7 +124,10 @@ def segment_frames(
     #    is kept as a transition of the merged step: flashes are UI bugs too.
     merged: list[Segment] = []
     for s in kept:
-        if merged and hamming(merged[-1].hashes[-1], s.hashes[0]) <= threshold:
+        # Also merge when the *settled* states match even if the boundary frames
+        # differ (e.g. a tap that only left a touch-indicator dot behind).
+        if merged and (hamming(merged[-1].hashes[-1], s.hashes[0]) <= threshold
+                       or hamming(merged[-1].hashes[-1], s.hashes[-1]) <= SETTLED_SAME):
             m = merged[-1]
             m.end = s.end
             m.frames += s.frames

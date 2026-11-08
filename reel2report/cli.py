@@ -61,6 +61,10 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+# bump when segmentation logic changes, so cached keyframes are rebuilt
+SEGMENT_VERSION = 2
+
+
 def _thin(items: list, limit: int) -> list:
     if len(items) <= limit:
         return items
@@ -137,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Stage 1-2 are skipped when the same video was already processed with the same settings.
     st = video.stat()
-    extract_sig = {"video": str(video.resolve()), "size": st.st_size, "mtime": int(st.st_mtime),
+    extract_sig = {"version": SEGMENT_VERSION, "video": str(video.resolve()), "size": st.st_size, "mtime": int(st.st_mtime),
                    **{k: getattr(args, k) for k in ("fps", "threshold", "min_stable", "transitions",
                                                     "strip_fps", "motion_interval", "max_width", "max_frames")}}
     kf_file = work / "keyframes.json"
