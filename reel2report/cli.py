@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import __version__, templates
 from .analyze import describe_steps, fmt_time, span, summarize
-from .extract import grab_frame, grab_strip, probe_duration, sample_frames
+from .extract import grab_matching, grab_strip, probe_duration, sample_frames
 from .render import render_agent, render_html, render_human, write_json
 from .segment import mark_revisits, segment_frames
 
@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 # bump when segmentation logic changes, so cached keyframes are rebuilt
-SEGMENT_VERSION = 2
+SEGMENT_VERSION = 3
 
 
 def _thin(items: list, limit: int) -> list:
@@ -89,7 +89,8 @@ def _extract(video: Path, duration: float, work: Path, frames_dir: Path, args) -
         stamp = fmt_time(t).replace(":", "-")
         kf = {"id": i, "t": round(t, 2), "kind": seg.kind,
               "stable_from": round(seg.start, 2), "stable_to": round(seg.end, 2),
-              "image": str(grab_frame(video, t, frames_dir / f"{i:04d}_{stamp}.jpg", args.max_width))}
+              "image": str(grab_matching(video, t, seg.frames[-1].path, frames_dir / f"{i:04d}_{stamp}.jpg",
+                                         args.max_width))}
         if seg.transitions:
             kf["transition_s"] = round(sum(e - s for s, e in seg.transitions), 2)
             if args.transitions == "strip":

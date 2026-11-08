@@ -56,6 +56,42 @@ def grab_frame(video: Path, t: float, dest: Path, max_width: int) -> Path:
     return dest
 
 
+def grab_matching(video: Path, t: float, reference: Path, dest: Path, max_width: int,
+                  window: float = 0.6) -> Path:
+    """Full-quality frame near time t that best matches a low-res reference sample.
+
+    Phone recordings are variable-frame-rate: the recorder only emits a frame when
+    the screen changes. The fps-sampled frame at time t therefore shows the last
+    frame *before* t, while seeking to t returns the first frame *after* it, which
+    may already be the next screen. Matching against the sample keeps the
+    screenshot faithful to what segmentation saw.
+    """
+    import tempfile
+
+    from .segment import dhash, hamming
+
+    tmp = Path(tempfile.mkdtemp(prefix="r2r_grab_"))
+    try:
+        start = max(t - window, 0)
+        subprocess.run(
+            [_require("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+             "-ss", f"{start:.3f}", "-t", f"{2 * window:.3f}", "-i", str(video),
+             "-vf", f"scale='min({max_width},iw)':-2", "-fps_mode", "passthrough",
+             "-q:v", "3", str(tmp / "c_%04d.jpg")],
+            check=True,
+        )
+        cands = sorted(tmp.glob("c_*.jpg"))
+        if not cands:
+            return grab_frame(video, t, dest, max_width)
+        ref = dhash(reference)
+        best = min(cands, key=lambda c: hamming(dhash(c), ref))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(best), dest)
+        return dest
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def grab_strip(video: Path, spans: list[tuple[float, float]], dest: Path, fps: float = 8.0,
                max_frames: int = 10, thumb_width: int = 200) -> tuple[Path, int] | None:
     """Re-sample transition spans at a higher rate and tile them into one filmstrip image.
