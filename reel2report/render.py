@@ -13,6 +13,7 @@ from html import escape as e
 from pathlib import Path
 
 SEV_LABEL = {"high": "🔴 高", "medium": "🟠 中", "low": "🟡 低"}
+TYPE_LABEL = {"bug": "缺陷", "ux": "体验", "incomplete": "未完成"}
 SPEECH_LABEL = {"complaint": "抱怨", "guess": "猜测", "correction": "更正", "suggestion": "建议",
                 "observation": "描述", "explain": "说明", "other": "其他"}
 
@@ -64,7 +65,7 @@ def render_human(steps: list[dict], summary: dict, meta: dict, out: Path) -> Pat
         L += ["未发现明显问题。", ""]
     for n, it in enumerate(issues, 1):
         L += [f"### {n}. {it.get('title', '')}", "",
-              f"- 严重程度：{SEV_LABEL.get(it.get('severity'), it.get('severity', '-'))}",
+              f"- 类型：{TYPE_LABEL.get(it.get('type'), it.get('type') or '-')}　严重程度：{SEV_LABEL.get(it.get('severity'), it.get('severity', '-'))}",
               f"- 相关步骤：{refs(_ids(it))}",
               f"- 预期：{it.get('expected', '-')}",
               f"- 实际：{it.get('actual', '-')}"]
@@ -153,7 +154,7 @@ def render_agent(steps: list[dict], summary: dict, meta: dict, out: Path) -> Pat
     if not issues:
         L += ["None found.", ""]
     for n, it in enumerate(issues, 1):
-        L += [f"### {n}. [{it.get('severity', '?')}] {it.get('title', '')}",
+        L += [f"### {n}. [{it.get('type') or 'bug'}/{it.get('severity', '?')}] {it.get('title', '')}",
               f"- Expected: {it.get('expected', '')}",
               f"- Actual: {it.get('actual', '')}",
               f"- Steps: {tag(_ids(it))}"]
@@ -248,7 +249,8 @@ def render_html(steps: list[dict], summary: dict, meta: dict, out: Path) -> Path
         repro = "".join(f"<li>{e(r)}</li>" for r in it.get("repro") or [])
         parts.append(
             f'<div class="card {sev_cls.get(it.get("severity"), "")}"><h3>{n}. {e(it.get("title", ""))}'
-            f' <span class="sev">{e(SEV_LABEL.get(it.get("severity"), it.get("severity", "")))}</span></h3>'
+            f' <span class="sev">{e(TYPE_LABEL.get(it.get("type"), it.get("type") or ""))} · '
+            f'{e(SEV_LABEL.get(it.get("severity"), it.get("severity", "")))}</span></h3>'
             f'<p><b>预期</b>：{e(it.get("expected", "-"))}</p><p><b>实际</b>：{e(it.get("actual", "-"))}</p>'
             + (f"<p><b>复现</b></p><ol>{repro}</ol>" if repro else "")
             + (f'<p class="muted">{e(it["notes"])}</p>' if it.get("notes") else "")

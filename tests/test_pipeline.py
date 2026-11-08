@@ -164,3 +164,22 @@ def test_split_phrases():
     from reel2report.transcribe import split_phrases
     words = [(0.5, 0.8, "我先"), (0.8, 1.2, "登录,"), (8.8, 9.0, "点"), (9.0, 9.3, "加号"), (13.2, 13.5, "保存。")]
     assert [p["text"] for p in split_phrases(words)] == ["我先登录", "点加号", "保存。"]
+
+
+def test_truncated_batch_is_split(tmp_path, monkeypatch):
+    import reel2report.llm as llm_mod
+
+    class Truncating(FakeLLM):
+        def chat_json(self, system, content, **kw):
+            n = sum(1 for c in content if c["type"] == "text" and c["text"].startswith("截图编号 "))
+            if n > 1:
+                raise llm_mod.OutputTruncated("too long")
+            return super().chat_json(system, content, **kw)
+
+    monkeypatch.setattr(llm_mod, "LLM", Truncating)
+    video = make_video(tmp_path)
+    out = tmp_path / "out"
+    assert cli.main([str(video), "-o", str(out), "--fps", "5", "--batch", "4", "--audio", "off"]) == 0
+    steps = json.loads((out / "steps.json").read_text("utf-8"))["steps"]
+    assert [s["id"] for s in steps] == [1, 2, 3, 4]
+    assert all(s.get("screen") for s in steps)  # every step answered, none dropped

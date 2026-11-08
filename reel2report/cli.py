@@ -56,6 +56,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="auto：视频有音轨且已安装 faster-whisper 时转写；on：必须转写；off：不转写（默认 auto）")
     a.add_argument("--asr-model", default="small", help="Whisper 模型：tiny/base/small/medium/large-v3（默认 small）")
     a.add_argument("--asr-lang", default="zh", help="口述语言，留空则自动识别（默认 zh）")
+    a.add_argument("--asr-hints", default="",
+                   help="产品名和界面专有词，用逗号分隔，帮助语音识别拼对，例如 \"Tunemate,首页,听辨\"")
     p.add_argument("--force", action="store_true", help="忽略缓存，重新抽帧和分析")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return p
@@ -175,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"      {msg}")
         else:
             print(f"[2/4] 转写口述（{args.asr_model}）")
-            segs = asr.transcribe(video, work, args.asr_model, args.asr_lang or None)
+            segs = asr.transcribe(video, work, args.asr_model, args.asr_lang or None, args.asr_hints)
             for kf in key_frames:
                 kf.pop("narration", None)
             asr.align(segs, key_frames)

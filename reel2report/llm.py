@@ -47,6 +47,10 @@ def parse_json(text: str) -> dict:
         raise
 
 
+class OutputTruncated(RuntimeError):
+    """The model hit max_tokens; callers can retry with a smaller request."""
+
+
 class LLM:
     def __init__(self, model: str | None = None, base_url: str | None = None,
                  api_key: str | None = None, temperature: float = 0.2):
@@ -98,7 +102,7 @@ class LLM:
             try:
                 return parse_json(choice.message.content or "")
             except (json.JSONDecodeError, ValueError) as e:
-                last_err = e
                 if choice.finish_reason == "length":
-                    last_err = RuntimeError("输出被截断（超过 max_tokens），请减小 --batch 或缩短视频")
+                    raise OutputTruncated("输出被截断（超过 max_tokens）") from e
+                last_err = e
         raise RuntimeError(f"模型调用失败：{last_err}")

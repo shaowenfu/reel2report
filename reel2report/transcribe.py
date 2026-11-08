@@ -33,9 +33,16 @@ def available() -> bool:
 
 
 def transcribe(video: Path, work: Path, model: str = "small", language: str | None = "zh",
-               log=print) -> list[dict]:
-    """Returns [{"start", "end", "text"}]. Cached in work/transcript_<model>.json."""
-    cache = work / f"transcript_{model}.json"
+               hints: str = "", log=print) -> list[dict]:
+    """Returns [{"start", "end", "text"}]. Cached per model + hints in work/.
+
+    hints: product names and on-screen terms ("Tunemate, 首页, 听辨") that bias
+    Whisper towards the right spelling of words it would otherwise mishear.
+    """
+    import hashlib
+
+    tag = hashlib.sha1(hints.encode()).hexdigest()[:6] if hints else ""
+    cache = work / (f"transcript_{model}_{tag}.json" if tag else f"transcript_{model}.json")
     if cache.exists():
         return json.loads(cache.read_text("utf-8"))
     from faster_whisper import WhisperModel
@@ -52,12 +59,21 @@ def transcribe(video: Path, work: Path, model: str = "small", language: str | No
     segments, _info = wm.transcribe(
         audio, language=language or None, vad_filter=True, word_timestamps=True,
         # nudges Whisper towards simplified Chinese punctuation/characters
-        initial_prompt="以下是软件测试过程中的普通话口述。" if (language or "").startswith("zh") else None,
+        initial_prompt=_prompt(language, hints),
+        hotwords=hints or None,
     )
     words = [(w.start, w.end, w.word) for seg in segments for w in (seg.words or [])]
     result = split_phrases(words)
     cache.write_text(json.dumps(result, ensure_ascii=False, indent=2), "utf-8")
     return result
+
+
+def _prompt(language: str | None, hints: str) -> str | None:
+    zh = (language or "").startswith("zh")
+    base = "以下是软件测试过程中的普通话口述。" if zh else ""
+    if hints:
+        base += ("涉及的词：" if zh else "Terms: ") + hints
+    return base or None
 
 
 PUNCT = set("，。！？、,.!?;；")

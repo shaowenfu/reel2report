@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from .llm import LLM, image_part, text_part
+from .llm import LLM, OutputTruncated, image_part, text_part
 from .templates import Template
 
 # Fixed parts: rules that keep the output honest, and the JSON format the code parses.
@@ -27,6 +27,7 @@ STEP_RULES = """你会按时间顺序看到一段软件使用录屏中的关键�
 关于测试者的口述（语音转写）：
 - 口述是边操作边想、边想边说的，常常零碎、重复、跑题，前面说的话后面可能被推翻；转写也可能有同音错别字。
 - 这一阶段你只看得到局部，不要替测试者下结论。在 speech 字段如实记录这一步口述的要点：去掉口头禅和重复，保留原意和关键原话，不要美化或补充。
+- 语音转写常把产品里的词转成同音字。请对照画面上的文字纠正明显的错字（例如画面上是“首页”而转写是“手页”，就写“首页”），不确定的保持原样。
 - speech_type 标注口述的性质：observation（描述看到的）、complaint（抱怨/认为有问题）、guess（猜测/不确定）、correction（更正或推翻自己之前的说法）、suggestion（功能建议/需求）、explain（解释自己在做什么/要测什么）、other。
 - 口述与画面矛盾时，两者都如实记录，并标 uncertain；不要因为口述就认定有 bug，也不要因为画面正常就忽略口述。"""
 
@@ -54,6 +55,8 @@ SUMMARY_RULES = """你会拿到整段录屏的逐步记录（含画面描述、�
 
 问题（issues）：
 - 只放有明确画面证据，或测试者明确认定且画面不矛盾的问题。
+- type 区分三类，都要收录：bug（功能错误、跳转错误、报错、崩溃）；ux（测试者明确批评的体验、交互、视觉、文案问题，例如“图标太丑”“没有信息量”“不知道有什么用”）；incomplete（未实现、点不开、占位或假的功能）。
+- 测试者的明确批评就是要交给开发者的反馈，不要因为“只是主观感受”而丢掉；但测试者自己也说不清、拿不准的，放进 to_verify。
 - 转场动画中间帧的交错、残影不算问题；测试者没提、只出现在零点几秒过渡里的视觉现象，最多放进 to_verify。
 - 加载慢的问题以画面时间段算出的实际等待时长为准，写清楚等了几秒。
 - 同一根因只列一条；多次复现的在 notes 里写出现次数和对应步骤。
@@ -63,7 +66,7 @@ SUMMARY_FORMAT = """只输出 JSON，格式：
 {"title": "标题", "overview": "整体概述（3-5 句：测了什么、主要结论）",
  "tasks": [{"title": "任务名", "goal": "测试者想验证什么", "step_ids": [相关步骤编号], "key_step_ids": [1-3 个关键步骤],
    "process": "过程要点（2-4 句，合并来回跳转）", "outcome": "最终结果"}],
- "issues": [{"title": "...", "severity": "high|medium|low", "step_ids": [相关步骤编号],
+ "issues": [{"title": "...", "type": "bug|ux|incomplete", "severity": "high|medium|low", "step_ids": [相关步骤编号],
    "repro": ["步骤1", "步骤2"], "expected": "预期结果", "actual": "实际结果", "notes": "补充/口述反复/出现次数"}],
  "to_verify": [{"title": "...", "step_ids": [相关步骤编号], "reason": "为什么需要人工确认（引用原话）"}],
  "retracted": [{"claim": "测试者起初的怀疑", "resolution": "后来如何确认/撤销", "step_ids": [相关步骤编号]}],
@@ -145,6 +148,19 @@ def describe_steps(llm: LLM, frames: list[dict], work: Path, tpl: Template, extr
     batches = [frames[i : i + batch_size] for i in range(0, len(frames), batch_size)]
     results: list[dict | None] = [None] * len(batches)
 
+    def _ask(batch: list[dict], prev: dict | None, running_context: str) -> dict:
+        """One request; if the reply is cut off, split the batch and ask for each half."""
+        try:
+            return llm.chat_json(system, _batch_content(batch, prev, running_context, product_context))
+        except OutputTruncated:
+            if len(batch) == 1:
+                raise
+            mid = len(batch) // 2
+            log(f"    输出过长，拆成 {mid} + {len(batch) - mid} 张重试")
+            a = _ask(batch[:mid], prev, running_context)
+            b = _ask(batch[mid:], batch[mid - 1], a.get("context", running_context))
+            return {"steps": a.get("steps", []) + b.get("steps", []), "context": b.get("context", "")}
+
     def run(bi: int, running_context: str = "") -> dict:
         cache_file = cache / f"batch_{bi:04d}.json"
         # the cache also remembers frame content, so re-segmented videos are not mixed up
@@ -157,7 +173,7 @@ def describe_steps(llm: LLM, frames: list[dict], work: Path, tpl: Template, extr
         n_strip = sum(1 for f in batches[bi] if f.get("strip"))
         log(f"  批次 {bi + 1}/{len(batches)}：{len(batches[bi])} 张截图 + {n_strip} 张过渡胶片")
         prev = batches[bi - 1][-1] if bi > 0 else None
-        result = llm.chat_json(system, _batch_content(batches[bi], prev, running_context, product_context))
+        result = _ask(batches[bi], prev, running_context)
         result["_sig"] = sig
         cache_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), "utf-8")
         return result
@@ -209,4 +225,4 @@ def summarize(llm: LLM, steps: list[dict], tpl: Template, extra: str = "",
     if transcript:
         content.append(text_part("【完整口述原文（语音转写，可能有错别字）】\n" + "\n".join(
             f"[{fmt_time(t['start'])}] {t['text']}" for t in transcript)))
-    return llm.chat_json(summary_system(tpl, extra), content, max_tokens=16000)
+    return llm.chat_json(summary_system(tpl, extra), content, max_tokens=32000)
