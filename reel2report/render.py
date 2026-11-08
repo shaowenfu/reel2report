@@ -18,26 +18,6 @@ SPEECH_LABEL = {"complaint": "抱怨", "guess": "猜测", "correction": "更正"
                 "observation": "描述", "explain": "说明", "other": "其他"}
 
 
-def upright_images(steps: list[dict], out: Path) -> None:
-    """Landscape apps appear rotated in portrait recordings. When the model reports a
-    rotation, write an upright copy for display (the original stays untouched)."""
-    from PIL import Image
-
-    for s in steps:
-        try:
-            rot = int(s.get("rotation") or 0) % 360
-        except (TypeError, ValueError):
-            rot = 0
-        if rot not in (90, 180, 270):
-            continue
-        src = Path(s["image"])
-        dst = src.parent / "upright" / src.name
-        dst.parent.mkdir(exist_ok=True)
-        with Image.open(src) as im:
-            im.rotate(-rot, expand=True).save(dst, quality=90)  # PIL rotates counter-clockwise
-        s["image_view"] = str(dst)
-
-
 def _img(s: dict) -> str:
     return s.get("image_view") or s["image"]
 
@@ -236,9 +216,21 @@ def write_json(steps: list[dict], summary: dict, meta: dict, out: Path) -> Path:
 
 # ---------------------------------------------------------------- HTML (share)
 
-def _data_uri(path: str) -> str:
+def _data_uri(path: str, max_width: int = 320, quality: int = 65) -> str:
+    """Embed a downscaled JPEG: the page shows images small, and a 20-minute
+    recording has hundreds of them (full size made a 46 MB file)."""
     import base64
-    return "data:image/jpeg;base64," + base64.b64encode(Path(path).read_bytes()).decode()
+    import io
+
+    from PIL import Image
+
+    with Image.open(path) as im:
+        im = im.convert("RGB")
+        if im.width > max_width:
+            im = im.resize((max_width, round(im.height * max_width / im.width)), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=quality, optimize=True)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
 CSS = """
@@ -316,7 +308,7 @@ def render_html(steps: list[dict], summary: dict, meta: dict, out: Path) -> Path
             rows.append(f'<p><b>过渡</b>（{s["transition_s"]:.1f}s）：{e(s.get("transition") or "-")}</p>')
         if s.get("anomaly"):
             rows.append(f'<p class="anom">⚠ {e(s["anomaly"].get("description", ""))}</p>')
-        strip = (f'<details><summary>过渡过程</summary><img class="strip" src="{_data_uri(s["strip"])}"></details>'
+        strip = (f'<details><summary>过渡过程</summary><img class="strip" src="{_data_uri(s["strip"], max_width=720, quality=55)}"></details>'
                  if s.get("strip") else "")
         step_cards.append(
             f'<section class="step" id="step-{s["id"]}"><img class="shot" loading="lazy" src="{_data_uri(_img(s))}">'

@@ -184,12 +184,3 @@ def test_truncated_batch_is_split(tmp_path, monkeypatch):
     assert [s["id"] for s in steps] == [1, 2, 3, 4]
     assert all(s.get("screen") for s in steps)  # every step answered, none dropped
 
-
-def test_upright_images(tmp_path):
-    from reel2report.render import upright_images
-    img = tmp_path / "a.jpg"
-    Image.new("RGB", (100, 200), "white").save(img)
-    steps = [{"image": str(img), "rotation": 90}, {"image": str(img), "rotation": 0}]
-    upright_images(steps, tmp_path)
-    assert Image.open(steps[0]["image_view"]).size == (200, 100)
-    assert "image_view" not in steps[1]
