@@ -67,11 +67,14 @@ class LLM:
         self.temperature = temperature
         self._json_mode = True
         self._max_tokens_ok = True
+        self._thinking_ok = True
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0}
         self._lock = threading.Lock()
 
     def chat_json(self, system: str, content: list[dict], retries: int = 3,
-                  max_tokens: int | None = 8000) -> dict:
+                  max_tokens: int | None = 8000, thinking: bool | None = None) -> dict:
+        """thinking: None = provider default; False/True asks a reasoning model to skip/use
+        its hidden reasoning (DeepSeek's `thinking` switch). Ignored by endpoints without it."""
         messages = [{"role": "system", "content": system},
                     {"role": "user", "content": content}]
         last_err: Exception | None = None
@@ -81,12 +84,17 @@ class LLM:
                 kwargs["response_format"] = {"type": "json_object"}
             if max_tokens and self._max_tokens_ok:
                 kwargs["max_tokens"] = max_tokens
+            if thinking is not None and self._thinking_ok:
+                kwargs["extra_body"] = {"thinking": {"type": "enabled" if thinking else "disabled"}}
             try:
                 resp = self.client.chat.completions.create(**kwargs)
             except Exception as e:  # noqa: BLE001
                 msg = str(e).lower()
                 if self._json_mode and "response_format" in msg:
                     self._json_mode = False  # endpoint lacks JSON mode; rely on the prompt
+                    continue
+                if self._thinking_ok and thinking is not None and "thinking" in msg:
+                    self._thinking_ok = False  # endpoint has no thinking switch
                     continue
                 if self._max_tokens_ok and "max_tokens" in msg:
                     self._max_tokens_ok = False  # use the endpoint's default output limit

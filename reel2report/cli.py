@@ -50,6 +50,10 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--batch", type=int, default=8, help="每次请求发送的截图数（默认 8）")
     m.add_argument("--workers", type=int, default=4,
                    help="并发请求数（默认 4）。设为 1 则按顺序分析并把前文概括传给下一批，连贯性最好但最慢")
+    m.add_argument("--step-thinking", choices=["off", "on", "default"], default="off",
+                   help="逐步看图时是否让推理模型先思考（默认 off：更快、更省、不会输出失控）")
+    m.add_argument("--summary-thinking", choices=["off", "on", "default"], default="on",
+                   help="汇总时是否让推理模型先思考（默认 on：裁决口述反复、归并任务更准）")
     m.add_argument("--no-ai", action="store_true", help="只抽取关键帧并生成带时间戳的截图报告，不调用模型")
     a = p.add_argument_group("语音解说（可选，需要 pip install \"reel2report[audio]\"）")
     a.add_argument("--audio", choices=["auto", "on", "off"], default="auto",
@@ -201,9 +205,11 @@ def main(argv: list[str] | None = None) -> int:
         llm = llm_mod.LLM(model=args.model, base_url=args.base_url)
         meta["model"] = llm.model
         print(f"[3/4] 模型分析：{llm.model}，模板 {tpl.name}" + ("，含追加要求" if extra else ""))
-        steps = describe_steps(llm, key_frames, work, tpl, extra, args.batch, product_context, args.workers)
+        flag = {"on": True, "off": False, "default": None}
+        steps = describe_steps(llm, key_frames, work, tpl, extra, args.batch, product_context, args.workers,
+                               flag[args.step_thinking])
         print("      汇总")
-        summary = summarize(llm, steps, tpl, extra, product_context, segs)
+        summary = summarize(llm, steps, tpl, extra, product_context, segs, flag[args.summary_thinking])
         meta["usage"] = llm.usage
 
     print("[4/4] 生成文档")

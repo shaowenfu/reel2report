@@ -133,7 +133,7 @@ def _batch_content(batch: list[dict], prev_frame: dict | None, running_context: 
 
 def describe_steps(llm: LLM, frames: list[dict], work: Path, tpl: Template, extra: str = "",
                    batch_size: int = 8, product_context: str = "", workers: int = 1,
-                   log=print) -> list[dict]:
+                   step_thinking: bool | None = False, log=print) -> list[dict]:
     """frames: [{"id", "t", "image", "strip"?, "transition_s"?, "narration"?}].
 
     workers=1 runs batches in order and passes a running summary forward (best
@@ -143,7 +143,7 @@ def describe_steps(llm: LLM, frames: list[dict], work: Path, tpl: Template, extr
     """
     system = step_system(tpl, extra)
     mode = "seq" if workers <= 1 else "par"
-    key = hashlib.sha1(f"{llm.model}\n{system}\n{product_context}\n{batch_size}\n{mode}".encode()).hexdigest()[:10]
+    key = hashlib.sha1(f"{llm.model}\n{system}\n{product_context}\n{batch_size}\n{mode}\n{step_thinking}".encode()).hexdigest()[:10]
     cache = work / "batches" / key
     cache.mkdir(parents=True, exist_ok=True)
     batches = [frames[i : i + batch_size] for i in range(0, len(frames), batch_size)]
@@ -152,7 +152,8 @@ def describe_steps(llm: LLM, frames: list[dict], work: Path, tpl: Template, extr
     def _ask(batch: list[dict], prev: dict | None, running_context: str) -> dict:
         """One request; if the reply is cut off, split the batch and ask for each half."""
         try:
-            return llm.chat_json(system, _batch_content(batch, prev, running_context, product_context))
+            return llm.chat_json(system, _batch_content(batch, prev, running_context, product_context),
+                                 thinking=step_thinking)
         except OutputTruncated:
             if len(batch) == 1:
                 # one screenshot alone still runs away (repetition loop): record it as
@@ -215,7 +216,8 @@ def describe_steps(llm: LLM, frames: list[dict], work: Path, tpl: Template, extr
 
 
 def summarize(llm: LLM, steps: list[dict], tpl: Template, extra: str = "",
-              product_context: str = "", transcript: list[dict] | None = None) -> dict:
+              product_context: str = "", transcript: list[dict] | None = None,
+              thinking: bool | None = True) -> dict:
     lines = []
     for s in steps:
         an = s.get("anomaly")
@@ -233,4 +235,4 @@ def summarize(llm: LLM, steps: list[dict], tpl: Template, extra: str = "",
     if transcript:
         content.append(text_part("【完整口述原文（语音转写，可能有错别字）】\n" + "\n".join(
             f"[{fmt_time(t['start'])}] {t['text']}" for t in transcript)))
-    return llm.chat_json(summary_system(tpl, extra), content, max_tokens=32000)
+    return llm.chat_json(summary_system(tpl, extra), content, max_tokens=32000, thinking=thinking)
