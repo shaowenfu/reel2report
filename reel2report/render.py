@@ -18,6 +18,30 @@ SPEECH_LABEL = {"complaint": "抱怨", "guess": "猜测", "correction": "更正"
                 "observation": "描述", "explain": "说明", "other": "其他"}
 
 
+def upright_images(steps: list[dict], out: Path) -> None:
+    """Landscape apps appear rotated in portrait recordings. When the model reports a
+    rotation, write an upright copy for display (the original stays untouched)."""
+    from PIL import Image
+
+    for s in steps:
+        try:
+            rot = int(s.get("rotation") or 0) % 360
+        except (TypeError, ValueError):
+            rot = 0
+        if rot not in (90, 180, 270):
+            continue
+        src = Path(s["image"])
+        dst = src.parent / "upright" / src.name
+        dst.parent.mkdir(exist_ok=True)
+        with Image.open(src) as im:
+            im.rotate(-rot, expand=True).save(dst, quality=90)  # PIL rotates counter-clockwise
+        s["image_view"] = str(dst)
+
+
+def _img(s: dict) -> str:
+    return s.get("image_view") or s["image"]
+
+
 def _rel(image: str, out: Path) -> str:
     return os.path.relpath(image, out).replace(os.sep, "/")
 
@@ -99,7 +123,7 @@ def render_human(steps: list[dict], summary: dict, meta: dict, out: Path) -> Pat
                   f"- 步骤：{refs(_ids(t))}", ""]
             keys = [i for i in _ids(t, "key_step_ids") if i in by_id][:3]
             if keys:
-                L.append(" ".join(f'<img src="{_rel(by_id[i]["image"], out)}" width="200" title="#{i}">' for i in keys))
+                L.append(" ".join(f'<img src="{_rel(_img(by_id[i]), out)}" width="200" title="#{i}">' for i in keys))
                 L.append("")
 
     L += ["## 附录：全部步骤", ""]
@@ -117,7 +141,7 @@ def render_human(steps: list[dict], summary: dict, meta: dict, out: Path) -> Pat
         if s.get("anomaly"):
             an = s["anomaly"]
             L.append(f"- **异常**（{SEV_LABEL.get(an.get('severity'), an.get('severity', ''))}）：{an.get('description', '')}")
-        L += ["", f'<img src="{_rel(s["image"], out)}" width="280">', ""]
+        L += ["", f'<img src="{_rel(_img(s), out)}" width="280">', ""]
         if s.get("strip"):
             L += ["<details><summary>过渡过程胶片</summary>", "",
                   f'<img src="{_rel(s["strip"], out)}">', "", "</details>", ""]
@@ -194,7 +218,7 @@ def render_agent(steps: list[dict], summary: dict, meta: dict, out: Path) -> Pat
             if i in shot_ids:
                 if s.get("strip"):
                     L.append(f"  ![#{i} transition]({_rel(s['strip'], out)})")
-                L.append(f"  ![#{i}]({_rel(s['image'], out)})")
+                L.append(f"  ![#{i}]({_rel(_img(s), out)})")
     path = out / "agent.md"
     path.write_text("\n".join(L) + "\n", "utf-8")
     return path
@@ -203,6 +227,7 @@ def render_agent(steps: list[dict], summary: dict, meta: dict, out: Path) -> Pat
 def write_json(steps: list[dict], summary: dict, meta: dict, out: Path) -> Path:
     data = {"meta": meta, "summary": summary,
             "steps": [{**s, "image": _rel(s["image"], out),
+                       **({"image_view": _rel(s["image_view"], out)} if s.get("image_view") else {}),
                        **({"strip": _rel(s["strip"], out)} if s.get("strip") else {})} for s in steps]}
     path = out / "steps.json"
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
@@ -271,7 +296,7 @@ def render_html(steps: list[dict], summary: dict, meta: dict, out: Path) -> Path
         cards = []
         for n, t in enumerate(summary["tasks"], 1):
             keys = [i for i in _ids(t, "key_step_ids") if i in by_id][:3]
-            thumbs = "".join(f'<a href="#step-{i}"><img loading="lazy" src="{_data_uri(by_id[i]["image"])}">'
+            thumbs = "".join(f'<a href="#step-{i}"><img loading="lazy" src="{_data_uri(_img(by_id[i]))}">'
                              f'<span>#{i} · {e(by_id[i]["time"])}</span></a>' for i in keys)
             cards.append(
                 f'<div class="card task"><h3>{n}. {e(t.get("title", ""))}</h3>'
@@ -294,7 +319,7 @@ def render_html(steps: list[dict], summary: dict, meta: dict, out: Path) -> Path
         strip = (f'<details><summary>过渡过程</summary><img class="strip" src="{_data_uri(s["strip"])}"></details>'
                  if s.get("strip") else "")
         step_cards.append(
-            f'<section class="step" id="step-{s["id"]}"><img class="shot" loading="lazy" src="{_data_uri(s["image"])}">'
+            f'<section class="step" id="step-{s["id"]}"><img class="shot" loading="lazy" src="{_data_uri(_img(s))}">'
             f'<div><h3>#{s["id"]} · <span class="muted">{e(s["time"])}</span> · {e(s.get("screen", ""))}{rv}</h3>'
             + "".join(rows) + strip + "</div></section>")
     # the appendix starts collapsed when the report has a task view to read first

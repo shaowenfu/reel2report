@@ -11,7 +11,7 @@ from pathlib import Path
 from . import __version__, templates
 from .analyze import describe_steps, fmt_time, span, summarize
 from .extract import grab_matching, grab_strip, probe_duration, sample_frames
-from .render import render_agent, render_html, render_human, write_json
+from .render import render_agent, render_html, render_human, upright_images, write_json
 from .segment import mark_revisits, segment_frames
 
 
@@ -207,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         meta["usage"] = llm.usage
 
     print("[4/4] 生成文档")
+    upright_images(steps, out)
     paths = [render_human(steps, summary, meta, out), render_agent(steps, summary, meta, out),
              render_html(steps, summary, meta, out), write_json(steps, summary, meta, out)]
     for pth in paths:

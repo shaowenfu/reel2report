@@ -22,7 +22,8 @@ STEP_RULES = """你会按时间顺序看到一段软件使用录屏中的关键�
 - 画面上的灰色或半透明圆点通常是系统“显示点按操作”的触摸指示，表示用户手指的位置，可用来判断点了哪里；它不是界面元素，被它遮住的内容不算异常。
 - 标注了“重复访问”的截图，表示画面与之前某一步几乎相同（用户在界面之间来回跳转）。screen 沿用同一个界面名称，observation 只写和上次相比的变化，没有变化就写“同 #编号”。
 - 第一张截图之前没有画面时，action 写“（录屏开始）”。
-- 用简体中文，描述简洁具体，写出界面上关键的按钮或文字。
+- 用简体中文，描述简洁具体，写出界面上关键的按钮或文字。控制长度：action 不超过 30 字，observation 不超过 80 字，speech 不超过 80 字；细节留给汇总阶段。
+- 横屏应用在竖屏录屏里会整体旋转 90°。遇到这种画面，按正常横屏界面来描述，不要当成异常，并在 rotation 里填写需要顺时针旋转多少度才能正着看（90 或 270）；正常竖屏画面填 0。
 
 关于测试者的口述（语音转写）：
 - 口述是边操作边想、边想边说的，常常零碎、重复、跑题，前面说的话后面可能被推翻；转写也可能有同音错别字。
@@ -35,7 +36,7 @@ STEP_FORMAT = """只输出 JSON，格式：
 {"steps": [{"id": <截图编号>, "screen": "界面名称", "action": "用户操作", "observation": "画面内容与结果",
   "transition": null 或 "过渡过程描述",
   "speech": null 或 "口述要点", "speech_type": null 或 "observation|complaint|guess|correction|suggestion|explain|other",
-  "anomaly": null 或 {"description": "...", "severity": "high|medium|low"}, "uncertain": false}],
+  "anomaly": null 或 {"description": "...", "severity": "high|medium|low"}, "uncertain": false, "rotation": 0}],
  "context": "到目前为止的流程概括（一两句话，供下一批参考）"}"""
 
 SUMMARY_RULES = """你会拿到整段录屏的逐步记录（含画面描述、过渡过程和每一步的口述要点），以及按时间排列的完整口述原文。请通读全部内容之后再下结论。
