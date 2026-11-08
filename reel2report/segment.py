@@ -131,3 +131,22 @@ def segment_frames(
         else:
             merged.append(s)
     return merged
+
+
+def mark_revisits(key_frames: list[dict], threshold: int = 5) -> int:
+    """Tag key frames that show (almost) the same screen as an earlier step.
+
+    Back-and-forth navigation is common in real test sessions; telling the model
+    "same as #5" lets it describe only what changed and lets the summary fold
+    the repetition into one task. Returns how many frames were tagged.
+    """
+    hashes = [dhash(kf["image"]) for kf in key_frames]
+    n = 0
+    for i, kf in enumerate(key_frames):
+        kf.pop("revisit_of", None)
+        for j in range(i - 2, -1, -1):  # i-1 is never identical: adjacent duplicates were merged
+            if hamming(hashes[i], hashes[j]) <= threshold:
+                kf["revisit_of"] = key_frames[j]["id"]
+                n += 1
+                break
+    return n

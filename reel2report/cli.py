@@ -12,7 +12,7 @@ from . import __version__, templates
 from .analyze import describe_steps, fmt_time, span, summarize
 from .extract import grab_frame, grab_strip, probe_duration, sample_frames
 from .render import render_agent, render_html, render_human, write_json
-from .segment import segment_frames
+from .segment import mark_revisits, segment_frames
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -150,8 +150,13 @@ def main(argv: list[str] | None = None) -> int:
         key_frames = _extract(video, duration, work, frames_dir, args)
         kf_file.write_text(json.dumps({"sig": extract_sig, "frames": key_frames}, ensure_ascii=False, indent=2), "utf-8")
 
+    n_rev = mark_revisits(key_frames)
+    if n_rev:
+        print(f"      其中 {n_rev} 步是重复访问之前的画面")
+
     # Narration
     narration_on = False
+    segs: list[dict] = []
     if args.audio != "off":
         from . import transcribe as asr
         if not asr.has_audio(video):
@@ -191,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[3/4] 模型分析：{llm.model}，模板 {tpl.name}" + ("，含追加要求" if extra else ""))
         steps = describe_steps(llm, key_frames, work, tpl, extra, args.batch, product_context, args.workers)
         print("      汇总")
-        summary = summarize(llm, steps, tpl, extra, product_context)
+        summary = summarize(llm, steps, tpl, extra, product_context, segs)
         meta["usage"] = llm.usage
 
     print("[4/4] 生成文档")

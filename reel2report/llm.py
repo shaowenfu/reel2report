@@ -62,10 +62,12 @@ class LLM:
         )
         self.temperature = temperature
         self._json_mode = True
+        self._max_tokens_ok = True
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0}
         self._lock = threading.Lock()
 
-    def chat_json(self, system: str, content: list[dict], retries: int = 3) -> dict:
+    def chat_json(self, system: str, content: list[dict], retries: int = 3,
+                  max_tokens: int | None = 8000) -> dict:
         messages = [{"role": "system", "content": system},
                     {"role": "user", "content": content}]
         last_err: Exception | None = None
@@ -73,12 +75,17 @@ class LLM:
             kwargs = {"model": self.model, "messages": messages, "temperature": self.temperature}
             if self._json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
+            if max_tokens and self._max_tokens_ok:
+                kwargs["max_tokens"] = max_tokens
             try:
                 resp = self.client.chat.completions.create(**kwargs)
             except Exception as e:  # noqa: BLE001
                 msg = str(e).lower()
                 if self._json_mode and "response_format" in msg:
                     self._json_mode = False  # endpoint lacks JSON mode; rely on the prompt
+                    continue
+                if self._max_tokens_ok and "max_tokens" in msg:
+                    self._max_tokens_ok = False  # use the endpoint's default output limit
                     continue
                 last_err = e
                 time.sleep(2 ** attempt)
@@ -87,8 +94,11 @@ class LLM:
                 with self._lock:  # batches may run in threads
                     self.usage["prompt_tokens"] += resp.usage.prompt_tokens or 0
                     self.usage["completion_tokens"] += resp.usage.completion_tokens or 0
+            choice = resp.choices[0]
             try:
-                return parse_json(resp.choices[0].message.content or "")
+                return parse_json(choice.message.content or "")
             except (json.JSONDecodeError, ValueError) as e:
                 last_err = e
+                if choice.finish_reason == "length":
+                    last_err = RuntimeError("输出被截断（超过 max_tokens），请减小 --batch 或缩短视频")
         raise RuntimeError(f"模型调用失败：{last_err}")

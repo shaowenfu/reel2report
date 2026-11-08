@@ -59,7 +59,7 @@ class FakeLLM:
     def __init__(self, *a, **k):
         self.usage = {"prompt_tokens": 1, "completion_tokens": 1}
 
-    def chat_json(self, system, content):
+    def chat_json(self, system, content, **kw):
         ids = [int(re.match(r"截图编号 (\d+)", c["text"]).group(1)) for c in content
                if c["type"] == "text" and c["text"].startswith("截图编号")]
         if ids:
@@ -105,9 +105,9 @@ def test_strip_files_and_prompt(tmp_path, monkeypatch):
     seen = []
 
     class Spy(FakeLLM):
-        def chat_json(self, system, content):
+        def chat_json(self, system, content, **kw):
             seen.append((system, content))
-            return super().chat_json(system, content)
+            return super().chat_json(system, content, **kw)
 
     monkeypatch.setattr(llm_mod, "LLM", Spy)
     video = make_video(tmp_path)
