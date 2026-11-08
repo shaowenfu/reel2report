@@ -155,7 +155,14 @@ def describe_steps(llm: LLM, frames: list[dict], work: Path, tpl: Template, extr
             return llm.chat_json(system, _batch_content(batch, prev, running_context, product_context))
         except OutputTruncated:
             if len(batch) == 1:
-                raise
+                # one screenshot alone still runs away (repetition loop): record it as
+                # unreadable rather than failing the whole run
+                f = batch[0]
+                log(f"    截图 #{f['id']} 的输出异常，已标记为待人工查看")
+                return {"steps": [{"id": f["id"], "screen": "", "action": "",
+                                   "observation": "（模型对这张截图的输出异常，请人工查看截图）",
+                                   "anomaly": None, "uncertain": True}],
+                        "context": running_context}
             mid = len(batch) // 2
             log(f"    输出过长，拆成 {mid} + {len(batch) - mid} 张重试")
             a = _ask(batch[:mid], prev, running_context)
