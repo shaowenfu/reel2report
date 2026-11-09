@@ -1,4 +1,4 @@
-"""Model stage: describe each key frame, then summarize."""
+"""Model stage 1: describe each key frame (pages.py turns steps into the report)."""
 
 from __future__ import annotations
 
@@ -42,45 +42,6 @@ STEP_FORMAT = """只输出 JSON，格式：
   "anomaly": null 或 {"description": "...", "severity": "high|medium|low"}, "uncertain": false}],
  "context": "到目前为止的流程概括（一两句话，供下一批参考）"}"""
 
-SUMMARY_RULES = """你会拿到整段录屏的逐步记录（含画面描述、过渡过程和每一步的口述要点），以及按时间排列的完整口述原文。请通读全部内容之后再下结论。
-用简体中文。只基于记录内容，不要编造。
-
-整理测试过程（tasks）：
-- 测试者常在界面之间来回跳转、重复操作。请按“测试者想验证什么”把步骤归并成若干测试任务，而不是按界面罗列。同一任务的步骤可以不连续（中途去做别的事又回来）。
-- 每个任务写清：目标、过程要点、最终结果；key_step_ids 只挑最能说明问题或结果的 1-3 步（报告里只给这些步骤配图）。
-- 纯导航、误触、重复确认的步骤不必单独提及。
-
-裁决口述（这是最重要的部分）：
-- 以测试者最终的结论为准：后面的说法推翻前面的，以后面为准；“哦原来是这样”“刚才说错了”“没问题了”这类更正，表示之前的怀疑被撤销。
-- 被撤销且画面也不支持的怀疑，不进 issues，记到 retracted 里，写明起初怎么说、后来怎么确认的，方便开发者知道这里已经排查过。
-- 撤销包括测试者重新评价自己的批评（“想了一下，这样其实是合理的”）：这类批评不进 issues；如果测试者同时提出了改进想法，放进 suggestions。
-- “点击无反应”“功能不可用”这类结论，要和后续步骤、口述交叉核对：测试者说“能点进去”或后面画面已经跳转的，不算问题。
-- 不属于被测软件的东西（系统通知、其他 App 的广告浮层、输入法）不进 issues；如果确实影响测试，放进 to_verify。
-- 被撤销但画面上确实有问题的，仍然列为问题，并在 notes 里说明测试者的说法有反复。
-- 只是猜测、没有得到确认的，放进 to_verify，reason 里引用原话。
-- 测试者提出的功能建议和需求（不是 bug）放进 suggestions。
-
-问题（issues）：
-- 只放有明确画面证据，或测试者明确认定且画面不矛盾的问题。
-- type 区分三类，都要收录：bug（功能错误、跳转错误、报错、崩溃）；ux（测试者明确批评的体验、交互、视觉、文案问题，例如“图标太丑”“没有信息量”“不知道有什么用”）；incomplete（未实现、点不开、占位或假的功能）。
-- 测试者的明确批评就是要交给开发者的反馈，不要因为“只是主观感受”而丢掉；但测试者自己也说不清、拿不准的，放进 to_verify。
-- 转场动画中间帧的交错、残影不算问题；测试者没提、只出现在零点几秒过渡里的视觉现象，最多放进 to_verify。
-- 加载慢的问题以画面时间段算出的实际等待时长为准，写清楚等了几秒。
-- 同一根因只列一条；多次复现的在 notes 里写出现次数和对应步骤。
-- repro 写成开发者照着做就能复现的最短路径，省掉来回跳转的冗余步骤。"""
-
-SUMMARY_FORMAT = """只输出 JSON，格式：
-{"title": "标题", "overview": "整体概述（3-5 句：测了什么、主要结论）",
- "tasks": [{"title": "任务名", "goal": "测试者想验证什么", "step_ids": [相关步骤编号], "key_step_ids": [1-3 个关键步骤],
-   "process": "过程要点（2-4 句，合并来回跳转）", "outcome": "最终结果"}],
- "issues": [{"title": "...", "type": "bug|ux|incomplete", "severity": "high|medium|low", "step_ids": [相关步骤编号],
-   "repro": ["步骤1", "步骤2"], "expected": "预期结果", "actual": "实际结果", "notes": "补充/口述反复/出现次数"}],
- "to_verify": [{"title": "...", "step_ids": [相关步骤编号], "reason": "为什么需要人工确认（引用原话）"}],
- "retracted": [{"claim": "测试者起初的怀疑", "resolution": "后来如何确认/撤销", "step_ids": [相关步骤编号]}],
- "suggestions": [{"content": "建议或需求", "step_ids": [相关步骤编号]}]}
-没有内容的字段用空数组。"""
-
-
 def _compose(*parts: str) -> str:
     return "\n\n".join(p.strip() for p in parts if p and p.strip())
 
@@ -88,11 +49,6 @@ def _compose(*parts: str) -> str:
 def step_system(tpl: Template, extra: str = "") -> str:
     return _compose(tpl.role, STEP_RULES, f"场景要求：\n{tpl.step}" if tpl.step else "",
                     f"用户的特别要求（优先遵守）：\n{extra}" if extra else "", STEP_FORMAT)
-
-
-def summary_system(tpl: Template, extra: str = "") -> str:
-    return _compose(tpl.summary, SUMMARY_RULES,
-                    f"用户的特别要求（优先遵守）：\n{extra}" if extra else "", SUMMARY_FORMAT)
 
 
 def fmt_time(t: float) -> str:
@@ -219,26 +175,3 @@ def describe_steps(llm: LLM, frames: list[dict], work: Path, tpl: Template, extr
             steps.append({**s, **{k: v for k, v in f.items() if k != "id"},
                           "id": f["id"], "time": span(f)})
     return steps
-
-
-def summarize(llm: LLM, steps: list[dict], tpl: Template, extra: str = "",
-              product_context: str = "", transcript: list[dict] | None = None,
-              thinking: bool | None = True) -> dict:
-    lines = []
-    for s in steps:
-        an = s.get("anomaly")
-        an_txt = f"｜⚠异常[{an.get('severity', '?')}]：{an.get('description', '')}" if an else ""
-        unc = "（不确定）" if s.get("uncertain") else ""
-        tr = f"｜过渡 {s['transition_s']:.1f}s：{s.get('transition') or ''}" if s.get("transition_s") else ""
-        rv = f"｜重复访问（同 #{s['revisit_of']}）" if s.get("revisit_of") else ""
-        sp = f"｜口述[{s.get('speech_type') or '?'}]：{s['speech']}" if s.get("speech") else ""
-        lines.append(f"#{s['id']} [{s['time']}] 界面：{s.get('screen', '')}{rv}｜操作：{s.get('action', '')}"
-                     f"{tr}｜结果：{s.get('observation', '')}{unc}{an_txt}{sp}")
-    content = []
-    if product_context:
-        content.append(text_part(f"【产品背景与预期行为】\n{product_context}"))
-    content.append(text_part("【逐步记录】\n" + "\n".join(lines)))
-    if transcript:
-        content.append(text_part("【完整口述原文（语音转写，可能有错别字）】\n" + "\n".join(
-            f"[{fmt_time(t['start'])}] {t['text']}" for t in transcript)))
-    return llm.chat_json(summary_system(tpl, extra), content, max_tokens=32000, thinking=thinking)

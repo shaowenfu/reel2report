@@ -68,11 +68,12 @@ class LLM:
         self._json_mode = True
         self._max_tokens_ok = True
         self._thinking_ok = True
-        self.usage = {"prompt_tokens": 0, "completion_tokens": 0}
+        self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "cache_hit_tokens": 0,
+                      "reasoning_tokens": 0, "requests": 0, "images": 0}
         self._lock = threading.Lock()
 
     def chat_json(self, system: str, content: list[dict], retries: int = 3,
-                  max_tokens: int | None = 8000, thinking: bool | None = None) -> dict:
+                  max_tokens: int | None = 8000, thinking: bool | None = False) -> dict:
         """thinking: None = provider default; False/True asks a reasoning model to skip/use
         its hidden reasoning (DeepSeek's `thinking` switch). Ignored by endpoints without it."""
         messages = [{"role": "system", "content": system},
@@ -104,8 +105,14 @@ class LLM:
                 continue
             if resp.usage:
                 with self._lock:  # batches may run in threads
-                    self.usage["prompt_tokens"] += resp.usage.prompt_tokens or 0
-                    self.usage["completion_tokens"] += resp.usage.completion_tokens or 0
+                    u = resp.usage
+                    self.usage["prompt_tokens"] += u.prompt_tokens or 0
+                    self.usage["completion_tokens"] += u.completion_tokens or 0
+                    self.usage["cache_hit_tokens"] += getattr(u, "prompt_cache_hit_tokens", 0) or 0
+                    details = getattr(u, "completion_tokens_details", None)
+                    self.usage["reasoning_tokens"] += getattr(details, "reasoning_tokens", 0) or 0
+                    self.usage["requests"] += 1
+                    self.usage["images"] += sum(1 for c in content if c.get("type") == "image_url")
             choice = resp.choices[0]
             try:
                 return parse_json(choice.message.content or "")

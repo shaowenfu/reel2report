@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import sys
 from pathlib import Path
 
 from . import __version__, templates
-from .analyze import describe_steps, fmt_time, span, summarize
+from .analyze import describe_steps, fmt_time, span
+from .pages import analyze_pages, group_pages, summarize_overview
 from .extract import grab_matching, grab_strip, probe_duration, sample_frames
 from .render import render_agent, render_html, render_human, write_json
 from .segment import mark_revisits, segment_frames
@@ -50,10 +52,14 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--batch", type=int, default=8, help="每次请求发送的截图数（默认 8）")
     m.add_argument("--workers", type=int, default=4,
                    help="并发请求数（默认 4）。设为 1 则按顺序分析并把前文概括传给下一批，连贯性最好但最慢")
-    m.add_argument("--step-thinking", choices=["off", "on", "default"], default="off",
-                   help="逐步看图时是否让推理模型先思考（默认 off：更快、更省、不会输出失控）")
-    m.add_argument("--summary-thinking", choices=["off", "on", "default"], default="on",
-                   help="汇总时是否让推理模型先思考（默认 on：裁决口述反复、归并任务更准）")
+    m.add_argument("--thinking", choices=["off", "summary", "all"], default="off",
+                   help="推理模型是否先思考：off 全部关闭（默认，更快更省）；summary 只在页面分析和总览时思考；all 全部思考")
+    m.add_argument("--price-in", type=float, default=float(os.environ.get("REEL2REPORT_PRICE_IN", 0.15)),
+                   help="输入单价，美元/百万 token，用于估算费用（默认 0.15，deepseek-flash 非高峰）")
+    m.add_argument("--price-out", type=float, default=float(os.environ.get("REEL2REPORT_PRICE_OUT", 0.60)),
+                   help="输出单价，美元/百万 token（默认 0.60）")
+    m.add_argument("--price-cached", type=float, default=float(os.environ.get("REEL2REPORT_PRICE_CACHED", 0.003)),
+                   help="命中缓存的输入单价，美元/百万 token（默认 0.003）")
     m.add_argument("--no-ai", action="store_true", help="只抽取关键帧并生成带时间戳的截图报告，不调用模型")
     a = p.add_argument_group("语音解说（可选，需要 pip install \"reel2report[audio]\"）")
     a.add_argument("--audio", choices=["auto", "on", "off"], default="auto",
@@ -69,6 +75,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 # bump when segmentation logic changes, so cached keyframes are rebuilt
 SEGMENT_VERSION = 3
+
+
+def estimate_cost(usage: dict, args) -> float:
+    """USD estimate from token counts and per-million prices."""
+    cached = usage.get("cache_hit_tokens", 0)
+    fresh = max(usage.get("prompt_tokens", 0) - cached, 0)
+    return (fresh * args.price_in + cached * args.price_cached + usage.get("completion_tokens", 0) * args.price_out) / 1e6
 
 
 def _thin(items: list, limit: int) -> list:
@@ -197,27 +210,43 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_ai:
         steps = [{**f, "time": span(f), "screen": "", "action": "", "observation": "",
                   "transition": None, "anomaly": None, "uncertain": False} for f in key_frames]
-        summary = {"title": f"{video.stem} 关键帧", "overview": "（--no-ai 模式：仅抽取关键帧，未调用模型）", "issues": []}
+        # without a model there is nothing to group by: one section per key frame
+        pages = [{"name": f"#{s['id']} · {s['time']}", "step_ids": [s["id"]], "screenshot_step_id": s["id"],
+                  "purpose": "", "ui_issues": [], "interactions": [], "feedback": s.get("narration", ""),
+                  "suggestions": [], "retracted": [], "to_verify": []} for s in steps]
+        report = {"title": f"{video.stem} 关键帧", "overview": "（--no-ai 模式：仅抽取关键帧，未调用模型）",
+                  "priorities": [], "cross_page": [], "pages": pages}
         print("[3/4] 跳过模型分析（--no-ai）")
     else:
         from . import llm as llm_mod
         llm_mod.IMAGE_DETAIL = args.detail
         llm = llm_mod.LLM(model=args.model, base_url=args.base_url)
         meta["model"] = llm.model
-        print(f"[3/4] 模型分析：{llm.model}，模板 {tpl.name}" + ("，含追加要求" if extra else ""))
-        flag = {"on": True, "off": False, "default": None}
+        meta["thinking"] = args.thinking
+        print(f"[3/4] 模型分析：{llm.model}，模板 {tpl.name}，思考 {args.thinking}" + ("，含追加要求" if extra else ""))
+        think_steps, think_summary = args.thinking == "all", args.thinking in ("summary", "all")
         steps = describe_steps(llm, key_frames, work, tpl, extra, args.batch, product_context, args.workers,
-                               flag[args.step_thinking])
-        print("      汇总")
-        summary = summarize(llm, steps, tpl, extra, product_context, segs, flag[args.summary_thinking])
+                               think_steps)
+        print("      按页面归并")
+        page_groups = group_pages(llm, steps, work, think_summary)
+        print(f"      {len(page_groups)} 个页面，逐页分析")
+        pages = analyze_pages(llm, page_groups, steps, work, tpl, extra, product_context, args.workers,
+                              think_summary)
+        print("      总览")
+        report = {**summarize_overview(llm, pages, work, tpl, extra, think_summary), "pages": pages}
         meta["usage"] = llm.usage
+        meta["cost_usd"] = round(estimate_cost(llm.usage, args), 4)
+        meta["prices"] = {"in": args.price_in, "out": args.price_out, "cached": args.price_cached}
 
     print("[4/4] 生成文档")
-    paths = [render_human(steps, summary, meta, out), render_agent(steps, summary, meta, out),
-             render_html(steps, summary, meta, out), write_json(steps, summary, meta, out)]
+    paths = [render_human(steps, report, meta, out), render_agent(steps, report, meta, out),
+             render_html(steps, report, meta, out), write_json(steps, report, meta, out)]
     for pth in paths:
         print(f"      {pth}")
     if "usage" in meta:
         u = meta["usage"]
-        print(f"      tokens：输入 {u['prompt_tokens']}，输出 {u['completion_tokens']}")
+        print(f"      请求 {u['requests']} 次，图片 {u['images']} 张；tokens：输入 {u['prompt_tokens']}"
+              f"（缓存命中 {u['cache_hit_tokens']}），输出 {u['completion_tokens']}（其中思考 {u['reasoning_tokens']}）")
+        print(f"      估算费用：${meta['cost_usd']:.3f}（输入 ${args.price_in}/M、输出 ${args.price_out}/M；"
+              "高峰时段约翻倍，以实际账单为准）")
     return 0
